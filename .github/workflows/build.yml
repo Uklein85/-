@@ -1,40 +1,72 @@
-      - name: Smoke test OCR engine
+name: Build DocumentOCR
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy opencv-python-headless Pillow PyQt6 rapidocr-onnxruntime onnxruntime PyMuPDF openpyxl pandas PyYAML pyinstaller
+
+      - name: Extract OCR models
         shell: pwsh
         run: |
           $script = @'
-          import sys
-          import numpy as np
-          import cv2
-
-          # Создаём тестовое изображение с текстом
-          img = np.full((120, 640, 3), 255, dtype=np.uint8)
-          cv2.putText(img, "TEST 12345", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 0), 4)
-
-          from ocr_engines import OCREngineManager
-          m = OCREngineManager(languages=['ru', 'en'])
-          engines = m.get_available_engines()
-          print(f"[INFO] available engines: {engines}")
-          
-          if not engines:
-              print("[ERROR] No OCR engine available")
-              sys.exit(1)
-
-          # Пробуем вызвать recognize с учётом разных сигнатур
-          try:
-              # Версия 1: с аргументом with_details
-              res = m.recognize(img, with_details=False)
-          except TypeError:
-              try:
-                  # Версия 2: без аргумента with_details
-                  res = m.recognize(img)
-              except TypeError:
-                  # Версия 3: вызываем напрямую через current_engine
-                  res = m.current_engine.recognize(img)
-
-          print(f"[INFO] engine: {res.engine}")
-          print(f"[INFO] text: {repr(res.text)}")
-          print(f"[INFO] confidence: {res.confidence}")
-          print("[SUCCESS] OCR smoke test passed")
+          import shutil, sys
+          from pathlib import Path
+          import rapidocr_onnxruntime as r
+          pkg = Path(r.__file__).parent
+          onnx = sorted(pkg.rglob("*.onnx"))
+          if not onnx: sys.exit(1)
+          dst = Path("ocr_models") / "rapidocr"
+          dst.mkdir(parents=True, exist_ok=True)
+          wanted = {"det": "ch_PP-OCRv4_det_infer.onnx", "rec": "ch_PP-OCRv4_rec_infer.onnx", "cls": "ch_ppocr_mobile_v2.0_cls_infer.onnx"}
+          picked = {}
+          for kind in wanted:
+              for p in onnx:
+                  if kind in p.name.lower() and "server" not in p.name.lower():
+                      picked[kind] = p
+                      break
+          for kind, src in picked.items():
+              shutil.copy2(src, dst / wanted[kind])
+          print("Models ready")
           '@
-          Set-Content -Path "smoke_test.py" -Value $script -Encoding UTF8
-          python smoke_test.py
+          Set-Content -Path "extract.py" -Value $script -Encoding UTF8
+          python extract.py
+
+      - name: Build EXE
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name DocumentOCR --add-data "ocr_models;ocr_models" --collect-all rapidocr_onnxruntime --collect-submodules onnxruntime --hidden-import pymupdf --hidden-import openpyxl --hidden-import pandas --exclude-module torch --exclude-module easyocr main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DocumentOCR
+          path: dist/DocumentOCR.exe
