@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
@@ -13,7 +14,7 @@ block_cipher = None
 datas = []
 binaries = []
 
-# 1. Модели RapidOCR - ГЛАВНОЕ ИСПРАВЛЕНИЕ
+# 1. Модели RapidOCR
 try:
     import rapidocr_onnxruntime
     rapidocr_dir = os.path.dirname(rapidocr_onnxruntime.__file__)
@@ -22,7 +23,7 @@ try:
     config_path = os.path.join(rapidocr_dir, 'config.yaml')
     if os.path.exists(config_path):
         datas.append((config_path, 'rapidocr_onnxruntime'))
-        print(f"✅ Добавлен config.yaml")
+        print("[OK] Added config.yaml")
     
     # Включаем ВСЕ модели ONNX (рекурсивно)
     models_dir = os.path.join(rapidocr_dir, 'models')
@@ -34,7 +35,7 @@ try:
                     rel_path = os.path.relpath(full_path, rapidocr_dir)
                     dest_dir = os.path.join('rapidocr_onnxruntime', os.path.dirname(rel_path))
                     datas.append((full_path, dest_dir))
-        print(f"✅ Добавлены модели ONNX из {models_dir}")
+        print("[OK] Added ONNX models from " + models_dir)
     
     # Включаем все .py файлы пакета
     for root, dirs, files in os.walk(rapidocr_dir):
@@ -46,22 +47,21 @@ try:
                 datas.append((full_path, dest_dir))
     
 except ImportError:
-    print("⚠️ rapidocr_onnxruntime не найден")
+    print("[WARN] rapidocr_onnxruntime not found")
 except Exception as e:
-    print(f"⚠️ Ошибка сбора RapidOCR: {e}")
+    print("[WARN] Error collecting RapidOCR: " + str(e))
 
 # 2. PyMuPDF данные
 try:
     import pymupdf
     pymupdf_dir = os.path.dirname(pymupdf.__file__)
-    # Включаем ресурсы PyMuPDF
     for item in os.listdir(pymupdf_dir):
         full_path = os.path.join(pymupdf_dir, item)
         if os.path.isfile(full_path) and not item.endswith('.py'):
             datas.append((full_path, 'pymupdf'))
-    print(f"✅ Добавлены данные PyMuPDF")
-except:
-    pass
+    print("[OK] Added PyMuPDF data")
+except Exception as e:
+    print("[WARN] PyMuPDF error: " + str(e))
 
 # 3. OpenCV DLL (важно для Windows)
 try:
@@ -71,12 +71,31 @@ try:
         if item.endswith('.dll') or item.endswith('.pyd'):
             full_path = os.path.join(cv2_dir, item)
             binaries.append((full_path, '.'))
-    print(f"✅ Добавлены DLL OpenCV")
-except:
-    pass
+    print("[OK] Added OpenCV DLLs")
+except Exception as e:
+    print("[WARN] OpenCV DLL error: " + str(e))
 
-print(f"\n📦 Всего данных: {len(datas)}")
-print(f"📦 Всего бинарников: {len(binaries)}")
+# 4. PyQt6 данные
+try:
+    import PyQt6
+    pyqt6_dir = os.path.dirname(PyQt6.__file__)
+    # Включаем плагины PyQt6
+    plugins_dir = os.path.join(pyqt6_dir, 'Qt6', 'plugins')
+    if os.path.exists(plugins_dir):
+        for root, dirs, files in os.walk(plugins_dir):
+            for file in files:
+                if file.endswith('.dll'):
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, pyqt6_dir)
+                    dest_dir = os.path.join('PyQt6', os.path.dirname(rel_path))
+                    datas.append((full_path, dest_dir))
+        print("[OK] Added PyQt6 plugins")
+except Exception as e:
+    print("[WARN] PyQt6 error: " + str(e))
+
+print("")
+print("[INFO] Total data files: " + str(len(datas)))
+print("[INFO] Total binaries: " + str(len(binaries)))
 
 # ============================================================
 # АНАЛИЗ
@@ -104,6 +123,10 @@ a = Analysis(
         'torchvision',
         'torchvision.ops',
         'yaml',
+        'PyQt6',
+        'PyQt6.QtWidgets',
+        'PyQt6.QtCore',
+        'PyQt6.QtGui',
     ],
     hookspath=[],
     hooksconfig={},
@@ -112,7 +135,6 @@ a = Analysis(
         'matplotlib',
         'scipy',
         'pandas',
-        'torch',  # Исключаем torch чтобы уменьшить размер (EasyOCR опционален)
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -140,7 +162,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # ВАЖНО: True чтобы видеть ошибки
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
