@@ -20,41 +20,65 @@ logger = logging.getLogger(__name__)
 # УТИЛИТА: ПОЛУЧЕНИЕ ПУТИ К МОДЕЛЯМ
 # ============================================================
 def get_models_dir() -> Path:
-    """Получить папку для хранения моделей"""
+    """
+    Папка с моделями OCR. Порядок поиска:
+      1) sys._MEIPASS/ocr_models    -> onefile-сборка PyInstaller (--add-data)
+      2) <папка exe>/ocr_models     -> модели лежат рядом с exe
+      3) <папка exe>/_internal/...  -> onedir-сборка PyInstaller 6.x
+      4) <папка проекта>/ocr_models -> запуск из Python
+    """
     if getattr(sys, 'frozen', False):
-        # В .exe сборке - рядом с exe файлом
-        return Path(sys.executable).parent / 'ocr_models'
+        exe_dir = Path(sys.executable).parent
+        fallback = exe_dir / 'ocr_models'
+        candidates = []
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            candidates.append(Path(meipass) / 'ocr_models')
+        candidates.append(exe_dir / 'ocr_models')
+        candidates.append(exe_dir / '_internal' / 'ocr_models')
     else:
-        # При запуске из Python - в папке проекта
-        return Path(__file__).parent / 'ocr_models'
+        here = Path(__file__).resolve().parent
+        fallback = here / 'ocr_models'
+        candidates = [here / 'ocr_models']
+
+    # 1. Папка, где реально лежат .onnx модели
+    for path in candidates:
+        rapid = path / 'rapidocr'
+        if rapid.is_dir() and any(rapid.glob('*.onnx')):
+            return path
+
+    # 2. Просто существующая папка
+    for path in candidates:
+        if path.is_dir():
+            return path
+
+    # 3. Ничего не найдено - возвращаем ожидаемый путь для понятной ошибки
+    return fallback
 
 
-def ensure_rapidocr_models():
-    """Убедиться что модели RapidOCR доступны"""
+def ensure_rapidocr_models() -> Path:
+    """Проверить наличие моделей (БЕЗ скачивания - они вшиты в сборку)."""
     models_dir = get_models_dir() / 'rapidocr'
-    models_dir.mkdir(parents=True, exist_ok=True)
-    
-    required_models = [
+
+    required = [
         'ch_PP-OCRv4_det_infer.onnx',
         'ch_PP-OCRv4_rec_infer.onnx',
-        'ch_ppocr_mobile_v2.0_cls_infer.onnx'
+        'ch_ppocr_mobile_v2.0_cls_infer.onnx',
     ]
-    
-    missing = []
-    for name in required_models:
-        dest = models_dir / name
-        if not dest.exists() or dest.stat().st_size < 1000000:
-            missing.append(name)
-    
+
+    missing = [
+        n for n in required
+        if not (models_dir / n).exists() or (models_dir / n).stat().st_size < 500_000
+    ]
+
     if missing:
         raise FileNotFoundError(
-            f"Отсутствуют OCR модели: {', '.join(missing)}\n"
-            f"Ожидаемая папка: {models_dir}\n"
-            f"Запустите download_models.py перед сборкой .exe"
+            "Отсутствуют модели OCR: " + ", ".join(missing) + "\n"
+            f"Папка поиска: {models_dir}\n"
+            "Модели должны быть вшиты в сборку через --add-data \"ocr_models;ocr_models\"."
         )
-    
-    return models_dir
 
+    return models_dir
 
 # ============================================================
 # СТРУКТУРЫ ДАННЫХ
