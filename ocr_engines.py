@@ -391,89 +391,154 @@ class PaddleOCREngine(OCREngine):
             engine=self.name,
             language='+'.join(self.languages)
         )
-
-
 # ============================================================
-# МЕНЕДЖЕР ДВИЖКОВ (ПОЛНОСТЬЮ ИСПРАВЛЕН)
+# МЕНЕДЖЕР ДВИЖКОВ
 # ============================================================
 class OCREngineManager:
+    """
+    Менеджер OCR движков.
+
+    Допустимые вызовы (все эквивалентны и безопасны):
+        OCREngineManager()
+        OCREngineManager(['ru', 'en'])                 # позиционный список языков
+        OCREngineManager(languages=['ru', 'en'])
+        OCREngineManager('RapidOCR', ['ru', 'en'])
+        OCREngineManager(preferred_engine='RapidOCR', languages=['ru', 'en'])
+    """
+
     PRIORITY = ['RapidOCR', 'PaddleOCR', 'EasyOCR']
-    
-    def __init__(self, preferred_engine: str = None, languages: List[str] = None):
-        # ВАЖНО: languages - это список, но мы НЕ используем его как ключ
-        self.languages: List[str] = languages if languages else ['ru', 'en']
-        self.engines: Dict[str, OCREngine] = {}  # ключи - СТРОКИ
+
+    def __init__(self, preferred_engine=None, languages=None):
+        # ---------- Нормализация аргументов ----------
+        # Список/кортеж на первой позиции = языки, а не имя движка.
+        # Именно это раньше давало TypeError: unhashable type: 'list'.
+        if isinstance(preferred_engine, (list, tuple, set)):
+            if languages is None:
+                languages = list(preferred_engine)
+            preferred_engine = None
+        elif preferred_engine is not None and not isinstance(preferred_engine, str):
+            preferred_engine = str(preferred_engine)
+
+        if languages is None:
+            languages = ['ru', 'en']
+        elif isinstance(languages, str):
+            languages = [languages]
+        else:
+            languages = [str(x) for x in languages]
+        if not languages:
+            languages = ['ru', 'en']
+
+        self.languages: List[str] = languages
+        self.engines: Dict[str, OCREngine] = {}      # ключи — ТОЛЬКО строки
         self.current_engine: Optional[OCREngine] = None
+
         self._init_all_engines(preferred_engine)
 
-    def _init_all_engines(self, preferred: str = None):
+    def _init_all_engines(self, preferred: Optional[str] = None):
         logger.info("Инициализация OCR движков...")
-        
-        # Фабрики движков - ключи СТРОКИ
-        engine_factories = [
+        logger.info("Языки: %s", ", ".join(self.languages))
+        try:
+            logger.info("Папка моделей: %s", get_models_dir())
+        except Exception:
+            pass
+
+        # Опциональные тяжёлые движки можно отключить (ускоряет старт .exe):
+        # set DOCOCR_DISABLE_OPTIONAL=1
+        skip_optional = os.environ.get('DOCOCR_DISABLE_OPTIONAL', '0') == '1'
+
+        factories = [
             ('RapidOCR', lambda: RapidOCREngine(list(self.languages))),
-            ('EasyOCR', lambda: EasyOCREngine(list(self.languages))),
-            ('PaddleOCR', lambda: PaddleOCREngine(list(self.languages))),
         ]
-        
-        for name, factory in engine_factories:
+        if not skip_optional:
+            factories += [
+                ('PaddleOCR', lambda: PaddleOCREngine(list(self.languages))),
+                ('EasyOCR', lambda: EasyOCREngine(list(self.languages))),
+            ]
+
+        for name, factory in factories:
+            engine = None
             try:
                 engine = factory()
-                # КЛЮЧ - СТРОКА name, НЕ список
-                self.engines[name] = engine
-                status = "доступен" if engine.is_available else "недоступен"
-                logger.info(f"  {name}: {status}")
             except Exception as e:
-                logger.warning(f"Ошибка инициализации {name}: {e}")
-        
-        # Выбор движка
-        if preferred and preferred in self.engines and self.engines[preferred].is_available:
-            self.current_engine = self.engines[preferred]
-        else:
-            for engine_name in self.PRIORITY:
-                if engine_name in self.engines and self.engines[engine_name].is_available:
-                    self.current_engine = self.engines[engine_name]
-                    break
-        
-        if self.current_engine:
-            logger.info(f"Выбран движок: {self.current_engine.name}")
-        else:
-            logger.error("Ни один OCR движок не доступен!")
-            logger.error("Установите: pip install rapidocr-onnxruntime")
+                logger.warning("  %s: ошибка инициализации (%s: %s)",
+                               name, type(e).__name__, e)
+            if engine is None:
+                continue
+            self.engines[str(name)] = engine
+            logger.info("  %s: %s", name,
+                        "доступен" if engine.is_available else "недоступен")
 
+        # ---------- Выбор движка (только строковые ключи) ----------
+        chosen: Optional[OCREngine] = None
+
+        if isinstance(preferred, str) and preferred:
+            candidate = self.engines.get(preferred)
+            if candidate is not None and candidate.is_available:
+                chosen = candidate
+            else:
+                logger.warning("Движок '%s' недоступен, выбираю автоматически", preferred)
+
+        if chosen is None:
+            for engine_name in self.PRIORITY:
+                candidate = self.engines.get(engine_name)
+                if candidate is not None and candidate.is_available:
+                    chosen = candidate
+                    break
+
+        if chosen is None:
+            for candidate in self.engines.values():
+                if candidate.is_available:
+                    chosen = candidate
+                    break
+
+        self.current_engine = chosen
+
+        if self.current_engine is not None:
+            logger.info("Выбран движок: %s", self.current_engine.name)
+        else:
+            logger.error("Ни один OCR движок не доступен")
+            logger.error("Проверьте модели в папке ocr_models/rapidocr "
+                         "и наличие пакета rapidocr-onnxruntime")
+
+    # ---------- Публичные методы ----------
     def get_available_engines(self) -> List[str]:
         return [name for name, engine in self.engines.items() if engine.is_available]
 
-    def switch_engine(self, engine_name: str) -> bool:
-        if engine_name in self.engines and self.engines[engine_name].is_available:
-            self.current_engine = self.engines[engine_name]
-            logger.info(f"Переключено на: {engine_name}")
+    def switch_engine(self, engine_name) -> bool:
+        if not isinstance(engine_name, str):
+            return False
+        engine = self.engines.get(engine_name)
+        if engine is not None and engine.is_available:
+            self.current_engine = engine
+            logger.info("Переключено на: %s", engine_name)
             return True
         return False
 
     def recognize(self, image: np.ndarray, with_details: bool = True) -> OCRResult:
-        if not self.current_engine:
+        if self.current_engine is None:
             raise RuntimeError("Нет доступных OCR движков")
-        
         try:
             if with_details:
                 return self.current_engine.recognize_with_details(image)
-            else:
-                return self.current_engine.recognize(image)
+            return self.current_engine.recognize(image)
         except Exception as e:
-            logger.error(f"Ошибка распознавания: {e}")
+            logger.error("Ошибка распознавания (%s): %s", type(e).__name__, e)
             return self._try_fallback(image, with_details)
 
     def _try_fallback(self, image: np.ndarray, with_details: bool) -> OCRResult:
         for name, engine in self.engines.items():
-            if engine.is_available and engine != self.current_engine:
-                logger.info(f"Попытка fallback: {name}")
-                try:
-                    if with_details:
-                        return engine.recognize_with_details(image)
-                    else:
-                        return engine.recognize(image)
-                except Exception:
-                    continue
-        
+            if not engine.is_available or engine is self.current_engine:
+                continue
+            logger.info("Попытка fallback: %s", name)
+            try:
+                if with_details:
+                    result = engine.recognize_with_details(image)
+                else:
+                    result = engine.recognize(image)
+                self.current_engine = engine
+                return result
+            except Exception as e:
+                logger.warning("Fallback %s не сработал: %s", name, e)
+                continue
         raise RuntimeError("Все OCR движки не смогли обработать изображение")
+
