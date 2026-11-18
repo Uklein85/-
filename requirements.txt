@@ -1,0 +1,23 @@
+# GUI
+PyQt6>=6.5.0
+
+# Обработка изображений
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# OCR движки (все автономные, без внешних зависимостей)
+rapidocr-onnxruntime>=1.3.0
+easyocr>=1.7.0
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0
+
+# PDF обработка (встроенная, без Poppler)
+PyMuPDF>=1.23.0
+
+# Анализ таблиц
+camelot-py[cv]>=0.11.0
+tabula-py>=2.7.0
+
+# Утилиты
+python-dateutil>=2.8.0
