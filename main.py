@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DocumentOCR — АО «СТНГ» (Автономная версия)")
         self.setMinimumSize(1000, 700)
-        self.ocr_manager = OCREngineManager(['ru', 'en'])
+        self.ocr_manager = OCREngineManager(languages=['ru', 'en'])
         self.current_file = None
         self.current_result = None
         self._init_ui()
