@@ -3,56 +3,83 @@ name: Build DocumentOCR
 on:
   push:
     tags:
-      - 'v*'
-  workflow_dispatch:
-
-permissions:
-  contents: write
+      - 'v*'  # Запуск при создании тега v1.0.0 и т.д.
+  workflow_dispatch:  # Ручной запуск из интерфейса GitHub
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     
     steps:
-      - uses: actions/checkout@v4
-      
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-      
-      - name: Set UTF-8 encoding
-        run: |
-          $env:PYTHONIOENCODING = "utf-8"
-          $env:PYTHONUTF8 = "1"
-        shell: pwsh
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-        shell: pwsh
-      
-      - name: Build EXE
-        run: |
-          $env:PYTHONIOENCODING = "utf-8"
-          $env:PYTHONUTF8 = "1"
-          pyinstaller build.spec --clean
-        shell: pwsh
-      
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: DocumentOCR-exe
-          path: dist/DocumentOCR.exe
-          retention-days: 30
-      
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: dist/DocumentOCR.exe
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout код
+      uses: actions/checkout@v4
+
+    - name: Установка Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Кэширование OCR моделей
+      id: cache-models
+      uses: actions/cache@v4
+      with:
+        path: ocr_models
+        key: ocr-models-v1-${{ hashFiles('download_models.py') }}
+        restore-keys: |
+          ocr-models-v1-
+
+    - name: Установка зависимостей
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r "requirements (2).txt"
+        pip install pyinstaller
+
+    - name: Скачивание OCR моделей
+      if: steps.cache-models.outputs.cache-hit != 'true'
+      run: |
+        echo "⬇️ Скачивание моделей..."
+        python download_models.py
+      env:
+        PYTHONUNBUFFERED: 1
+
+    - name: Проверка наличия моделей
+      run: |
+        if (-not (Test-Path "ocr_models\rapidocr\ch_PP-OCRv4_det_infer.onnx")) {
+          throw "Модели не скачались!"
+        }
+        Get-ChildItem -Path "ocr_models" -Recurse | Select-Object FullName, Length
+
+    - name: Сборка .exe через PyInstaller
+      run: |
+        pyinstaller --noconfirm --onefile --windowed `
+          --name "DocumentOCR" `
+          --add-data "ocr_models;ocr_models" `
+          --hidden-import "rapidocr_onnxruntime" `
+          --hidden-import "onnxruntime" `
+          --hidden-import "cv2" `
+          --hidden-import "numpy" `
+          --hidden-import "PIL" `
+          --hidden-import "pymupdf" `
+          --hidden-import "fitz" `
+          --hidden-import "yaml" `
+          --hidden-import "openpyxl" `
+          --hidden-import "pandas" `
+          --collect-all PyQt6 `
+          main.py
+
+    - name: Загрузка артефакта
+      uses: actions/upload-artifact@v4
+      with:
+        name: DocumentOCR-Windows
+        path: dist/DocumentOCR.exe
+        retention-days: 90
+
+    - name: Создание релиза
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: dist/DocumentOCR.exe
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
