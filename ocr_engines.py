@@ -1,20 +1,71 @@
 """
-OCR Engines Module
-Все OCR движки для автономной работы без внешних зависимостей
+OCR Engines Module - Исправленная версия для .exe сборки
 """
 
 import os
+import sys
 import cv2
 import numpy as np
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass, field
-import json
 from pathlib import Path
+import urllib.request
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# УТИЛИТА: СКАЧИВАНИЕ МОДЕЛЕЙ ПРИ ПЕРВОМ ЗАПУСКЕ
+# ============================================================
+
+def get_models_dir() -> Path:
+    """Получить папку для хранения моделей"""
+    if getattr(sys, 'frozen', False):
+        # В .exe сборке - рядом с exe файлом
+        return Path(sys.executable).parent / 'ocr_models'
+    else:
+        # При запуске из Python - в папке проекта
+        return Path(__file__).parent / 'ocr_models'
+
+
+def download_file(url: str, dest: Path, desc: str = ''):
+    """Скачать файл с прогрессом"""
+    if dest.exists():
+        return
+    
+    print(f"⬇️ Скачивание {desc}...")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        urllib.request.urlretrieve(url, dest)
+        print(f"✅ Скачано: {dest.name}")
+    except Exception as e:
+        print(f"❌ Ошибка скачивания: {e}")
+        if dest.exists():
+            dest.unlink()
+
+
+def ensure_rapidocr_models():
+    """Убедиться что модели RapidOCR доступны"""
+    models_dir = get_models_dir() / 'rapidocr'
+    models_dir.mkdir(parents=True, exist_ok=True)
+    
+    # URL моделей RapidOCR (ch_PP-OCRv4)
+    models = {
+        'ch_PP-OCRv4_det_infer.onnx': 'https://github.com/RapidAI/RapidOCR/releases/download/v1.3.0/ch_PP-OCRv4_det_infer.onnx',
+        'ch_PP-OCRv4_rec_infer.onnx': 'https://github.com/RapidAI/RapidOCR/releases/download/v1.3.0/ch_PP-OCRv4_rec_infer.onnx',
+        'ch_ppocr_mobile_v2.0_cls_infer.onnx': 'https://github.com/RapidAI/RapidOCR/releases/download/v1.3.0/ch_ppocr_mobile_v2.0_cls_infer.onnx',
+    }
+    
+    for name, url in models.items():
+        dest = models_dir / name
+        if not dest.exists():
+            download_file(url, dest, name)
+    
+    return models_dir
 
 
 # ============================================================
@@ -23,28 +74,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TextBlock:
-    """Блок распознанного текста"""
     text: str
     confidence: float
     bbox: List[List[float]] = field(default_factory=list)
     font_size: float = 0.0
     is_bold: bool = False
-    is_italic: bool = False
     language: str = ''
 
 
 @dataclass
 class ImageRegion:
-    """Область изображения в документе"""
     bbox: List[List[float]]
     image: np.ndarray
     confidence: float
-    region_type: str  # 'image', 'chart', 'diagram', 'photo'
+    region_type: str
 
 
 @dataclass
 class OCRResult:
-    """Результат OCR обработки"""
     text: str
     blocks: List[TextBlock]
     images: List[ImageRegion]
@@ -55,17 +102,15 @@ class OCRResult:
 
 
 # ============================================================
-# АБСТРАКТНЫЙ БАЗОВЫЙ КЛАСС
+# БАЗОВЫЙ КЛАСС
 # ============================================================
 
 class OCREngine(ABC):
-    """Абстрактный базовый класс для OCR движков"""
-    
     def __init__(self, languages: List[str] = None):
         self.languages = languages or ['ru', 'en']
         self.name = "BaseEngine"
         self._is_available = False
-        
+    
     @property
     def is_available(self) -> bool:
         return self._is_available
@@ -74,31 +119,43 @@ class OCREngine(ABC):
     def recognize(self, image: np.ndarray) -> OCRResult:
         pass
     
-    @abstractmethod
     def recognize_with_details(self, image: np.ndarray) -> OCRResult:
-        pass
+        return self.recognize(image)
 
 
 # ============================================================
-# ДВИЖОК 1: RAPIDOCR (ONNX-based, легкий)
+# ДВИЖОК 1: RAPIDOCR (ОСНОВНОЙ, ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 class RapidOCREngine(OCREngine):
     """
-    RapidOCR - легковесный движок на базе ONNX Runtime
-    Не требует внешних зависимостей
-    Поддержка русского и английского языков
+    RapidOCR - основной движок
+    Исправлено: модели скачиваются автоматически при первом запуске
     """
     
     def __init__(self, languages: List[str] = None):
         super().__init__(languages)
         self.name = "RapidOCR"
+        self._engine = None
         
         try:
+            # Убедиться что модели есть
+            models_dir = ensure_rapidocr_models()
+            
+            # Настроить переменные окружения для RapidOCR
+            os.environ['RAPIDOCR_MODELS_DIR'] = str(models_dir)
+            
             from rapidocr_onnxruntime import RapidOCR
-            self.engine = RapidOCR()
+            
+            # Инициализация с явным указанием папки моделей
+            self._engine = RapidOCR(
+                det_model_path=str(models_dir / 'ch_PP-OCRv4_det_infer.onnx'),
+                rec_model_path=str(models_dir / 'ch_PP-OCRv4_rec_infer.onnx'),
+                cls_model_path=str(models_dir / 'ch_ppocr_mobile_v2.0_cls_infer.onnx'),
+            )
+            
             self._is_available = True
-            logger.info("✅ RapidOCR успешно инициализирован")
+            logger.info(f"✅ RapidOCR инициализирован (модели: {models_dir})")
         except ImportError as e:
             logger.warning(f"❌ RapidOCR не установлен: {e}")
             logger.warning("   Решение: pip install rapidocr-onnxruntime")
@@ -108,19 +165,15 @@ class RapidOCREngine(OCREngine):
             self._is_available = False
     
     def recognize(self, image: np.ndarray) -> OCRResult:
-        """Базовое распознавание"""
-        if not self._is_available:
+        if not self._is_available or self._engine is None:
             raise RuntimeError("RapidOCR недоступен")
         
-        result, _ = self.engine(image)
+        result, _ = self._engine(image)
         
         if not result:
             return OCRResult(
-                text='',
-                blocks=[],
-                images=[],
-                confidence=0.0,
-                engine=self.name,
+                text='', blocks=[], images=[],
+                confidence=0.0, engine=self.name,
                 language='+'.join(self.languages)
             )
         
@@ -149,38 +202,30 @@ class RapidOCREngine(OCREngine):
         )
     
     def recognize_with_details(self, image: np.ndarray) -> OCRResult:
-        """Распознавание с детальной информацией"""
         result = self.recognize(image)
         
-        # Анализ размеров шрифтов
         for block in result.blocks:
             if block.bbox and len(block.bbox) >= 2:
                 height = abs(block.bbox[2][1] - block.bbox[0][1])
                 block.font_size = height
                 block.is_bold = self._estimate_bold(image, block.bbox)
         
-        # Детекция изображений
-        result.images = self._detect_images(image, result.blocks)
-        
+        result.images = self._detect_images(image)
         return result
     
     def _detect_language(self, text: str) -> str:
-        """Определение языка текста"""
-        cyrillic_chars = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
-        latin_chars = sum(1 for c in text if '\u0041' <= c <= '\u005A' or '\u0061' <= c <= '\u007A')
-        
-        if cyrillic_chars > latin_chars:
+        cyrillic = sum(1 for c in text if '\u0400' <= c <= '\u04FF')
+        latin = sum(1 for c in text if '\u0041' <= c <= '\u005A' or '\u0061' <= c <= '\u007A')
+        if cyrillic > latin:
             return 'ru'
-        elif latin_chars > cyrillic_chars:
+        elif latin > cyrillic:
             return 'en'
         return 'unknown'
     
     def _estimate_bold(self, image: np.ndarray, bbox: List) -> bool:
-        """Оценка жирности шрифта"""
         try:
             x_coords = [int(p[0]) for p in bbox]
             y_coords = [int(p[1]) for p in bbox]
-            
             x_min, x_max = min(x_coords), max(x_coords)
             y_min, y_max = min(y_coords), max(y_coords)
             
@@ -191,26 +236,18 @@ class RapidOCREngine(OCREngine):
             if roi.size == 0:
                 return False
             
-            if len(roi.shape) == 3:
-                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = roi
-            
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) == 3 else roi
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
             density = np.sum(binary > 0) / binary.size
             return density > 0.35
-        except Exception:
+        except:
             return False
     
-    def _detect_images(self, image: np.ndarray, blocks: List[TextBlock]) -> List[ImageRegion]:
-        """Детекция изображений в документе"""
+    def _detect_images(self, image: np.ndarray) -> List[ImageRegion]:
         images = []
-        
         try:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            
-            # Поиск контуров
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             for contour in contours:
@@ -218,13 +255,11 @@ class RapidOCREngine(OCREngine):
                 area = w * h
                 image_area = image.shape[0] * image.shape[1]
                 
-                # Фильтр: область должна быть достаточно большой
-                if area > 10000 and area < image_area * 0.5:
-                    # Проверка, что это не текст (мало текста внутри)
+                if 10000 < area < image_area * 0.5:
                     roi = binary[y:y+h, x:x+w]
                     text_density = np.sum(roi > 0) / roi.size
                     
-                    if text_density < 0.3:  # Мало текста = изображение
+                    if text_density < 0.3:
                         roi_image = image[y:y+h, x:x+w]
                         images.append(ImageRegion(
                             bbox=[[x, y], [x+w, y], [x+w, y+h], [x, y+h]],
@@ -232,54 +267,54 @@ class RapidOCREngine(OCREngine):
                             confidence=0.8,
                             region_type='image'
                         ))
-        except Exception as e:
-            logger.warning(f"Ошибка детекции изображений: {e}")
-        
+        except:
+            pass
         return images
 
 
 # ============================================================
-# ДВИЖОК 2: EASYOCR (PyTorch-based)
+# ДВИЖОК 2: EASYOCR (ОПЦИОНАЛЬНЫЙ, С ИСПРАВЛЕНИЕМ)
 # ============================================================
 
 class EasyOCREngine(OCREngine):
-    """
-    EasyOCR - движок на базе PyTorch
-    Поддержка 80+ языков
-    Высокое качество распознавания
-    """
+    """EasyOCR - опциональный движок"""
     
     def __init__(self, languages: List[str] = None, gpu: bool = False):
         super().__init__(languages)
         self.name = "EasyOCR"
-        self.gpu = gpu
+        self._reader = None
         
         try:
             import easyocr
             lang_map = {'ru': 'ru', 'en': 'en', 'rus': 'ru', 'eng': 'en'}
-            self.easyocr_langs = [lang_map.get(l, l) for l in self.languages]
+            langs = [lang_map.get(l, l) for l in self.languages]
             
-            logger.info(f"Инициализация EasyOCR с языками: {self.easyocr_langs}")
-            self.reader = easyocr.Reader(
-                self.easyocr_langs, 
-                gpu=self.gpu,
-                verbose=False
-            )
+            # Проверка torchvision
+            try:
+                import torchvision
+                import torchvision.ops
+                # Тест оператора nms
+                _ = torchvision.ops.nms
+            except (ImportError, AttributeError, RuntimeError) as e:
+                logger.warning(f"⚠️ torchvision.nms недоступен: {e}")
+                logger.warning("   EasyOCR может не работать. Обновите: pip install --upgrade torch torchvision")
+            
+            self._reader = easyocr.Reader(langs, gpu=gpu, verbose=False)
             self._is_available = True
-            logger.info("✅ EasyOCR успешно инициализирован")
+            logger.info("✅ EasyOCR инициализирован")
         except ImportError as e:
             logger.warning(f"❌ EasyOCR не установлен: {e}")
-            logger.warning("   Решение: pip install easyocr")
             self._is_available = False
         except Exception as e:
             logger.error(f"❌ Ошибка EasyOCR: {type(e).__name__}: {e}")
+            logger.warning("   EasyOCR недоступен. Используйте RapidOCR.")
             self._is_available = False
     
     def recognize(self, image: np.ndarray) -> OCRResult:
-        if not self._is_available:
+        if not self._is_available or self._reader is None:
             raise RuntimeError("EasyOCR недоступен")
         
-        results = self.reader.readtext(image)
+        results = self._reader.readtext(image)
         
         blocks = []
         texts = []
@@ -304,64 +339,19 @@ class EasyOCREngine(OCREngine):
             engine=self.name,
             language='+'.join(self.languages)
         )
-    
-    def recognize_with_details(self, image: np.ndarray) -> OCRResult:
-        result = self.recognize(image)
-        
-        for block in result.blocks:
-            if block.bbox and len(block.bbox) >= 2:
-                height = abs(block.bbox[2][1] - block.bbox[0][1])
-                block.font_size = height
-        
-        result.images = self._detect_images(image)
-        
-        return result
-    
-    def _detect_images(self, image: np.ndarray) -> List[ImageRegion]:
-        """Детекция изображений"""
-        images = []
-        try:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for contour in contours:
-                x, y, w, h = cv2.boundingRect(contour)
-                area = w * h
-                image_area = image.shape[0] * image.shape[1]
-                
-                if area > 10000 and area < image_area * 0.5:
-                    roi = binary[y:y+h, x:x+w]
-                    text_density = np.sum(roi > 0) / roi.size
-                    
-                    if text_density < 0.3:
-                        roi_image = image[y:y+h, x:x+w]
-                        images.append(ImageRegion(
-                            bbox=[[x, y], [x+w, y], [x+w, y+h], [x, y+h]],
-                            image=roi_image,
-                            confidence=0.8,
-                            region_type='image'
-                        ))
-        except Exception:
-            pass
-        
-        return images
 
 
 # ============================================================
-# ДВИЖОК 3: PADDLEOCR (лучшее качество)
+# ДВИЖОК 3: PADDLEOCR (ОПЦИОНАЛЬНЫЙ, ИСПРАВЛЕННЫЙ)
 # ============================================================
 
 class PaddleOCREngine(OCREngine):
-    """
-    PaddleOCR от Baidu
-    Лучшее качество для русского языка
-    Поддержка таблиц и layout analysis
-    """
+    """PaddleOCR - опциональный движок (исправлено: убран show_log)"""
     
     def __init__(self, languages: List[str] = None, use_gpu: bool = False):
         super().__init__(languages)
         self.name = "PaddleOCR"
+        self._ocr = None
         
         try:
             from paddleocr import PaddleOCR
@@ -369,36 +359,39 @@ class PaddleOCREngine(OCREngine):
             lang_map = {'ru': 'ru', 'en': 'en', 'rus': 'ru', 'eng': 'en'}
             primary_lang = lang_map.get(self.languages[0], 'ru')
             
-            logger.info(f"Инициализация PaddleOCR с языком: {primary_lang}")
-            self.ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang=primary_lang,
-                use_gpu=use_gpu,
-                show_log=False
-            )
+            # ИСПРАВЛЕНИЕ: убран параметр show_log (удален в новых версиях)
+            try:
+                self._ocr = PaddleOCR(
+                    use_angle_cls=True,
+                    lang=primary_lang,
+                    use_gpu=use_gpu,
+                )
+            except TypeError:
+                # Если все еще ошибка, пробуем без use_gpu
+                self._ocr = PaddleOCR(
+                    use_angle_cls=True,
+                    lang=primary_lang,
+                )
+            
             self._is_available = True
-            logger.info("✅ PaddleOCR успешно инициализирован")
+            logger.info(f"✅ PaddleOCR инициализирован (язык: {primary_lang})")
         except ImportError as e:
             logger.warning(f"❌ PaddleOCR не установлен: {e}")
-            logger.warning("   Решение: pip install paddlepaddle paddleocr")
             self._is_available = False
         except Exception as e:
             logger.error(f"❌ Ошибка PaddleOCR: {type(e).__name__}: {e}")
             self._is_available = False
     
     def recognize(self, image: np.ndarray) -> OCRResult:
-        if not self._is_available:
+        if not self._is_available or self._ocr is None:
             raise RuntimeError("PaddleOCR недоступен")
         
-        result = self.ocr.ocr(image, cls=True)
+        result = self._ocr.ocr(image, cls=True)
         
         if not result or not result[0]:
             return OCRResult(
-                text='',
-                blocks=[],
-                images=[],
-                confidence=0.0,
-                engine=self.name,
+                text='', blocks=[], images=[],
+                confidence=0.0, engine=self.name,
                 language='+'.join(self.languages)
             )
         
@@ -425,16 +418,6 @@ class PaddleOCREngine(OCREngine):
             engine=self.name,
             language='+'.join(self.languages)
         )
-    
-    def recognize_with_details(self, image: np.ndarray) -> OCRResult:
-        result = self.recognize(image)
-        
-        for block in result.blocks:
-            if block.bbox and len(block.bbox) >= 2:
-                height = abs(block.bbox[2][1] - block.bbox[0][1])
-                block.font_size = height
-        
-        return result
 
 
 # ============================================================
@@ -442,9 +425,7 @@ class PaddleOCREngine(OCREngine):
 # ============================================================
 
 class OCREngineManager:
-    """Менеджер OCR движков с автоматическим выбором лучшего"""
-    
-    PRIORITY = ['PaddleOCR', 'EasyOCR', 'RapidOCR']
+    PRIORITY = ['RapidOCR', 'PaddleOCR', 'EasyOCR']
     
     def __init__(self, preferred_engine: str = None, languages: List[str] = None):
         self.languages = languages or ['ru', 'en']
@@ -454,16 +435,16 @@ class OCREngineManager:
         self._init_all_engines(preferred_engine)
     
     def _init_all_engines(self, preferred: str = None):
-        """Инициализация всех движков"""
         logger.info("Инициализация OCR движков...")
         
-        engine_classes = [
+        # Инициализируем в порядке приоритета
+        engine_factories = [
             ('RapidOCR', lambda: RapidOCREngine(self.languages)),
             ('EasyOCR', lambda: EasyOCREngine(self.languages)),
             ('PaddleOCR', lambda: PaddleOCREngine(self.languages)),
         ]
         
-        for name, factory in engine_classes:
+        for name, factory in engine_factories:
             try:
                 engine = factory()
                 self.engines[name] = engine
@@ -472,6 +453,7 @@ class OCREngineManager:
             except Exception as e:
                 logger.warning(f"Ошибка инициализации {name}: {e}")
         
+        # Выбор движка
         if preferred and preferred in self.engines and self.engines[preferred].is_available:
             self.current_engine = self.engines[preferred]
         else:
@@ -481,9 +463,10 @@ class OCREngineManager:
                     break
         
         if self.current_engine:
-            logger.info(f"Выбран движок: {self.current_engine.name}")
+            logger.info(f"🎯 Выбран движок: {self.current_engine.name}")
         else:
-            logger.error("Ни один OCR движок не доступен!")
+            logger.error("❌ Ни один OCR движок не доступен!")
+            logger.error("Установите: pip install rapidocr-onnxruntime")
     
     def get_available_engines(self) -> List[str]:
         return [name for name, engine in self.engines.items() if engine.is_available]
@@ -511,7 +494,7 @@ class OCREngineManager:
     def _try_fallback(self, image: np.ndarray, with_details: bool) -> OCRResult:
         for name, engine in self.engines.items():
             if engine.is_available and engine != self.current_engine:
-                logger.info(f"Попытка использовать fallback: {name}")
+                logger.info(f"Попытка fallback: {name}")
                 try:
                     if with_details:
                         return engine.recognize_with_details(image)
