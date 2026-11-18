@@ -1,0 +1,16 @@
+# GUI
+PyQt6>=6.5.0
+# Обработка изображений
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+# OCR движки
+rapidocr-onnxruntime>=1.3.0
+easyocr>=1.7.0
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0
+# PDF обработка
+PyMuPDF>=1.23.0
+# Утилиты
+PyYAML>=6.0
+requests>=2.31.0        # ← ДОБАВИТЬ ЭТУ СТРОКУ
